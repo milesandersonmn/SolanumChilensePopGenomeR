@@ -1,0 +1,474 @@
+---
+title: "NGS Data Analysis and In Silico Evolutionary Genetics Final Report"
+author: "Miles Anderson"
+date: "9/6/2021"
+output: html_document
+bibliography: ChilenseBib.bib
+link_citations: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r,include=FALSE, echo=FALSE}
+source("SummaryStatisticsFinal.R", local = knitr::knit_global())
+```
+
+
+## Introduction
+
+|  The advent of next generation sequencing has allowed for rapid and accurate genotyping of living organisms. This information can be used for many applications that expand scientific knowledge of the biological world. This report will detail the steps taken in a next generation sequencing workflow coinciding with the lessons in the “NGS Data Analysis” course, as well as the following independent analysis of the research practical. The explicit goal of the project was to identify adaptive genes within the species *Solanum chilense* through a population genomics analysis, as well as apply principles of population genetics to sequencing data from this species. 
+|	*Solanum chilense* is a wild tomato relative endemic to South America in Peru and Chile. The specie’s relation to *Solanum lycopersicum* makes it an important reservoir for potential genes of abiotic and biotic stress resistance that can be used for tomato breeding (Zhang et al., 2016). For this reason, the identification of potential adaptive genes is of interest. The specie’s taxon also has historic instability due to difficulties in classification of outcrossing species, and consensus populations show morphological diversity between their geographical ranges. For example, southern coastal populations exhibit low prostrate growth patterns, while inland populations show erect growth (Radusky and Igić, 2021). These morphological patterns hint at differential selective pressures among different populations that could show signatures of selection in genes involved with growth regulation. Samples were taken from 35 individuals evenly apportioned across 7 populations with the geographic distribution of populations being shown on this map: ![Chilense populations map](images/pastedImage.png)
+|	The original avenue of investigation was to potentially identify genes conferring abiotic or biotic stress resistance through a literature review of four stress response pathways in plants of jasomonic acid, salicylic acid, ethylene, and abcissic acid. By researching these stress response pathways and the genes responsible in model organisms, a basic local alignment search tool (BLAST) workflow was established to query nucleotide sequences in *Solanum chilense*. Several other stress response genes and genes involved in growth regulation pathways were also queried on an ad hoc basis while reviewing other modes of stress response and metabolic pathways. 
+As the intent of the project was familiarization with NGS workflows and analysis, only an exploratory analysis was undertaken to find genes that could reasonably be expected to show patterns of diversity between populations based on the principles already described. These genes were then analyzed for diversity using a variant calling protocol and measuring nucleotide diversity, Tajima’s D (Tajima, 1989), and FST. A basic framework was developed to undertake variant calling and analysis as a goal of the project. 
+
+
+## Methods and Materials
+
+|	For the NGS class portion of the project, the weekly modules were performed on three samples of Solanum chilense. The exercises used the raw data from samples 11, 12, and 14 from the directory `/data/proj/chilense/Chilense30AccessionReSeq` and proceeded through a pipeline of quality checking, data pre-processing, and short read alignment.
+
+
+### Quality check and data pre-processing: 
+|	A `fastqc` (Andrews, S. 2010) report was generated for the three raw sample datasets to visually assess the potential quality issues in the raw sequencing reads. The general trend in all samples was data failing to pass the Kmer module. There has been historic confusion surrounding the results of the Kmer module in `fastqc` and so it is disabled by default after version 0.11.6. However, version 0.11.4 was used for this analysis, so the module is included although it does not necessarily contain relevant results. The Kmer failure therefore did not factor into further decision making on which parameters to use in downstream read trimming. Sequencing runs for 11_R1 and 14_R1 failed the per tile sequencing quality module. This problem can arise when bubbles form on the flowcell, there is smudging on the flowcell, or debris in the flowcell lane. Specific action can be taken to exclude specific flowcells from the data analysis, but this would be considered drastic and exclude potentially informative data. For this reason, no action was taken for this issue beyond simply removing reads below a certain Phred score. Sequencing for 14_R2 failed the per base sequence quality module as well. Typically, the reverse read in paired-end reads are known to have lower quality (Kwon et al., 2013) and this result would not be cause for alarm. Therefore no specific action was needed for this sequencing read. Warnings for per sequence GC content were generated for all reads as the disparity between the A and T, as well as G and C exceeded 10% over all base positions. This warning was disregarded as the data was generated from a whole genome sequencing experiment, so the disparity between the GC content and AT content should be expected. Previous investigation into GC content of domesticated tomato (*Solanum lycopersicum*) showed a whole genome percentage around 34% (Guyot et al., 2005.) The GC content in the chosen samples was around 38%. It can be inferred this is probably the GC content in our species genome, so no specific action was needed for this warning message.
+|	Having analyzed the failure and warning messages for each of the sequencing runs, a uniform trimming pipeline was decided upon to be applied to all the sample files. The trimming software bbduk was used to remove adaptor sequences, phiX, and sequencing artifacts, as well as perform final quality trimming. The following commands were used to perform adapter trimming, contaminant removal, and quality trimming respectively:
+
+```
+bbduk.sh threads=4 in=11_R#.fastq.gz out=11_noadapters_R#.fastq.gz \
+ref=/data/proj/teaching/NGS_course/Softwares/bbmap/resources/adapters.fa ktrim=r k=21 \
+mink=11 hdist=2 tpe tbo stats=sample_noadapters.stats.txt
+```
+
+```
+bbduk.sh threads=8 in=11_noadapters_R#.fastq.gz out=11_nocontaminants_R#.fastq.gz \
+ref=/data/proj/teaching/NGS_course/Softwares/bbmap/resources/sequencing_artifacts.fa.gz,/data/proj/teaching/NGS_course/Softwares/bbmap/resources/phix174_ill.ref.fa.gz \
+k=31 hdist=1 stats=sample_nocontaminants.stats.txt
+```
+
+```
+bbduk.sh threads=8 in=11_nocontaminants_R#.fastq.gz out=11_clean_R#.fastq.gz \
+qtrim=lr trimq=10 minlength=21 maq=10 maxns=5
+```
+
+|   The ktrim parameter is set to “r” (right trim) because Illumina sequencing only ligates adaptors on the 3’ end of a DNA fragment. Therefore all kmers that are stored between the `mink` length of 11 and the `k` parameter length of 21 will be trimmed only from the right end of the sequence. The hamming distance is set to 2 by `hdist` to allow a difference of 2 bases between kmers. A hamming distance of 2 is used to reduce false positive detection of adapters and potentially removing useful real sequencing data. The `tpe` parameter is turned on to trim both reads in the paired-end read to the same length if an adapter is detected in either read. The `tbo` parameter is turned on to trim adapters based on pair overlap detection. Match percentages ranged from 0.4 to 1.4 over the 3 samples.
+|	For contaminant removal a higher `k` value is set to ensure less genuine data is lost and the hamming distance is reduced to one. The matched read percentage for phiX and contaminants was between 0.089 and 0.18.
+|	Quality trimming was performed in both left and right mode by setting `qtrim` to `lr`. The `trimq` parameter was set to 10 meaning all bases with a Phred score below 10 were removed. All reads that were trimmed to less than 21 bases are filtered by setting `minlength` to ensure better short read mapping. Any reads with a total Phred score below 10 after trimming are filtered using `maq`. All reads with more than 5 unknown base calls are filtered using `maxns`.
+|	The cleaned reads were then examined using `fastqc`. The fastqc report returned warnings for the per base sequence content module and sequence length distribution module. The per base sequence content warning could be ignored for the aforementioned reason. The sequence length distribution module returns a warning when sequence lengths vary in the sample. This warning is returned due to the trimming parameters that result in different sequence lengths and can therefore also be disregarded. With the reads being quality controlled and processed, they could then proceed to the short read alignment protocol.
+
+### Short read alignment:
+
+|	Genome mapping was performed in a comparative manner using the bowtie2 software (Langmead and Salzberg, 2012) and the bbmap software (Bushnell, 2014). The quality of the alignments was then assessed using the qualimap software (García-Alcalde, 2012). 
+	The genome was first indexed for the bowtie2 pipeline using the `bowtie2-build` subcommand. The alignment was then performed:
+
+```
+time bowtie2 -p 6 --local -x S_chilense_reference_rename.fasta -1 11_clean_R1.fastq.gz -2 11_clean_R2.fastq.gz -S 11_bowtie2_local.sam
+```
+
+|   The remaining steps in the alignment processing were undertaken using the SAMtools  software suite (Li et al., 2009). The SAM file was converted to BAM format, sorted, and indexed:
+
+```
+samtools view -@ 6 -bS 11_bowtie2_local.sam > 11_bowtie2_local.bam;
+```
+```
+samtools sort -@ 6 11_bowtie2_local.bam -o 11_bowtie2_local.sorted.bam;
+```
+```
+samtools index 11_bowtie2_local.sorted.bam
+```
+
+|   The bbmap alignment used a similar pipeline although indexing the genome before alignment is not required. A BAM file was produced directly in order to save storage space on the computing cluster. The alignment was performed:
+
+```
+time bbmap.sh threads=12 trd ref=S_chilense_reference_rename.fasta nodisk in=11_clean_R#.fastq.gz out=11_bbmap_global.bam
+```
+
+|	The SAMtools sorting, and indexing steps were then performed similarly to the bowtie2 alignments. The final step for both sets of alignments was to measure their quality through the use of the qualimap software:
+
+```
+qualimap bamqc -nt 6 -c -outformat PDF:HTML -bam 11_bbmap_global.sorted.bam; \
+qualimap bamqc -nt 6 -c -outformat PDF:HTML -bam 11_bowtie2_local.sorted.bam
+```
+
+### BLAST for potential traits:
+|	The objective of the research project was to identify traits in literature that could potentially be conserved in *Solanum chilense* and then identify whether these traits were under selection in the samples for which genomic data is available. As such the use of the NCBI’s BLAST (Altschul et al., 1990) was necessary to search for conserved nucleotide sequences. 
+|	Genes of interest were identified through literature reviews for stress metabolism, which were then submitted to the NCBI BLAST database website to identify orthologs in *Solanum lycopersicum*. If a match was found in domesticated tomato, these potential genes were then saved as a FASTA file and transferred to the TUM Population Genetics’ Chair computing cluster and searched against the existing BLAST+ nucleotide database for *Solanum chilense*. Results were limited using an e-value threshold of 1e-50. 
+|	Genes of interest were searched on an inferential and ad hoc basis based on published papers detailing plant stress metabolisms and local adaption of plant populations in growth responses. As such the metabolic pathways of interest were jasmonic acid (Howe et al., 2018), salicylic acid (Pandey and Chakraborty, 2015), ethylene (Rodrigues et al., 2014), and abscisic acid (Sah et al., 2016) for their roles in abiotic and biotic stress responses. Alcohol dehydrogenase (Kato-Noguchi, 2008) and ICE1 (Chinnusamy et al., 2003) were investigated for their potential in cold temperature acclimation and freezing tolerance. Gibberellin oxidases (Huang et al., 2015) and gibberellin receptors (Tanaka et al., 2006) were also investigated for their potential roles in morphological responses, however the gibberellin insensitive dwarf receptors have also been shown to be involved in cold and fungal pathogen responses. A leucine aminopeptidase (Scranton et al., 2012) was investigated due to the protein family’s role in tomato stress response. WRKY transcription factors (Jiang et al., 2017) were also investigated due to their roles in a wide variety of plant stress response pathways. 
+	20 genes of interest were identified through BLAST+ in *Solanum chilense*:
+*DELLA protein GAI
+*MYC transcription factor 2
+*R2R3MYB transcription factor 14
+*WRKY transcription factor 40
+*WRKY1000.3
+*abscisic acid receptor PYL9
+*coronatine-insensitive 1
+*dehydration responsive element binding protein 1
+*ethylene receptor ETR2
+*gibberellin 2-oxidase 2
+*gibberellin 20-oxidase 4
+*gibberellin 20-oxidase-1
+*gibberellin 3-beta-dioxygenase 1
+*gibberellin receptor GID1ac
+*gibberellin receptor GID1b-1
+*gibberellin receptor GID1b-2
+*jasmonate ZIM-domain protein 2
+*leucine aminopeptidase LapA2
+*putative alcohol dehydrogenase class III
+*transcription factor ICE1-like
+	
+|	The BLAST+ search was performed using the following command template with an output format of 6:
+
+```
+blastn -db S_chilense -query genesBLAST/<gene>.fasta -evalue 1e-50 -outfmt 6 > resultsBLAST/<gene>.out 
+```
+
+|  Once the BLAST tables were formed for each gene of interest in an `.out` file, a BED file was populated with the chromosome, start position, end position, and the NCBI version code from the BLAST results using the following `awk` wrapper script:
+
+```
+for file in *.out; do
+	awk -v 'OFS=\t' '{print $2, $9, $10, $1}' $file >> genesChilense.bed
+done
+```
+
+|   The newly generated BED file was edited in Microsoft Excel to correct end positions that were reversed with start positions, which is an artifact from the BLAST+ query results for some loci depending on their strand. 
+	
+### Variant calling:
+|	In order to create a VCF file of a manageable size, it was necessary to only include the loci of interest to be analyzed. The final goal for the analysis was to perform population summary statistics for introns and exons within the gene regions. 
+To accomplish this task, first it was necessary to determine the putative location of the genes of interest in the existing *Solanum chilense* annotation and generate a BED file from these locations to use in sub-setting the regions for the variant calling. All the gene regions in the existing annotation were extracted and converted to BED format using the following command:
+
+```
+awk '$3 == "gene"' ../../reference/S_chilense_new/S_chilense_reference_rename_annotation.gff > genesOnly.gff
+```
+
+|	Using the BEDtools software suite (Quinlan and Hall, 2010) with the `intersect` sub-command, the BED file containing the BLAST results and the new GFF file containing all annotated gene locations were compared for overlapping regions and the chromosome, start position, and end position were stored from the annotation in a BED format:
+
+```
+bedtools intersect -a genesChilenseCopy2.bed -b genesOnly.gff -wb | awk '{print $4,$7,$8}' > genesOnly.bed
+```
+
+|  However, GFF files are 1-based and BED files are 0-based, so the coordinates needed to be corrected by subtracting 1 from the start and end positions:
+
+```
+cat genesOnly.bed | awk '{print $1, $2-1, $3-1}' OFS='\t'  > genesOnlyCorrected.bed
+```
+
+|   Duplicated regions were removed:
+
+```
+sort genesOnlyCorrected.bed | uniq > genesOnlyCorrectedNoDup.bed
+```
+
+|   This BED file was then ready to be used to create a VCF at the desired genomic regions. It was necessary to calculate the average depth of coverage over all the samples, in order to set a maximum coverage in the variant call to exclude potentially duplicated genomic regions that were incorrectly mapped. This was accomplished using the following `awk` loop:
+
+```
+for file in ../../bam_files/map2Schil_V2/*.markdup.bam
+do
+samtools depth $file | awk '{sum+=$3} END {print "Average = ",sum/NR}' >> averageDepth.txt
+done
+```
+|	Then the combined average depth, average sample depth, and standard deviation were calculated using the following respective commands:
+
+```
+awk '{sum+=$3;} END{print sum}' averageDepth.txt
+```
+```
+awk 'BEGIN{s=0;}{s=s+$3;}END{print s/NR;}' averageDepth.txt
+```
+```
+awk '{sum+=$3; sumsq+=$3*$3} END {print sqrt(sumsq/NR - (sum/NR)^2)}' averageDepth.txt
+```
+|	It was decided to set the maximum coverage at the combined average depth plus one standard deviation. The combined average depth was 1084.65 and the combined standard deviation was 241.083, so a maximum coverage of 1330 was set.
+|	The FreeBayes variant caller (Garrison and Marth, 2012) was used to generate a VCF using the following command: 
+
+```
+freebayes -f /data/proj/chilense/30_genomes_outputs/reference/S_chilense_new/S_chilense_reference_rename.fasta --target ./genesOnlyCorrectedNoDup.bed --limit-coverage 1330 \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/1963_t1.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/1963_t3.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/1963_t5.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/1963_t7.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/1963_t9.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2931_t2.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2931_t3.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2931_t4.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2931_t5.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2931_t6.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2932_12.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2932_1.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2932_20.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2932_22.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/2932_8.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/3111_t10.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/3111_t15.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/3111_t3.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/3111_t5.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/3111_t9.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4107_3.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4107_6.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4107_9.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4107_t11.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4107_t5.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4117A_10new.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4117A_15new.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4117A_1new.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4117A_4new.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4117A_5new.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4330_t12.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4330_t1.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4330_t4.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4330_t6.markdup.bam \
+	-b /data/proj/chilense/30_genomes_outputs/bam_files/map2Schil_V2/4330_t9.markdup.bam > S_chilense.final.raw_variants.vcf
+```
+
+|	This VCF file was then edited using tools from the Vcflib software (Garrison et al., 2021.) The multiple nucleotide polymorphism variants were split into single nucleotide polymorphisms:
+
+```
+vcfallelicprimitives -kg S_chilense.final.raw_variants.vcf > S_chilense.final.raw_split.vcf
+```
+
+|	A filter was applied so that all variants must have a quality score scaled for read depth that exceeded 10:
+
+```
+vcffilter -f 'QUAL / AO > 10'  S_chilense.final.raw_split.vcf > S_Chilense.DP_Qualfilt.vcf
+```
+|	The downstream analysis could only be performed with SNPs, so indels were removed:
+
+```
+vcftools --vcf S_Chilense.DP_Qualfilt.vcf --remove-indels --recode --recode-INFO-all --out NoIndels
+```
+|	Finally, if a genotype call was not present in at least 75% of all samples, the loci was removed:
+
+```
+vcftools --vcf NoIndels.recode.vcf --max-missing .75 --recode --recode-INFO-all --out NoIndelsNoMissing
+```
+
+|	The VCF was then sorted using bcftools (Li, 2011) in case further downstream indexing and compression would be required:
+
+```
+bcftools sort NoIndelsNoMissing.recode.vcf > NoIndelsNoMissing.sorted.recode.vcf   
+```
+
+### Summary statistic calculation:
+|	VCF data was used to calculate nucleotide diversity ($\pi$), Tajima’s D, and FST of the subpopulations versus all individuals using the R package `Popgenome` (Pfeifer, 2014.) A necessary step for this process was generating a GFF file that contained an annotation for exons and introns. 
+|   First a GFF was created which contained only exons within the regions of interest using the aforementioned process for the GFF only containing genes, simply substituting “exon” for “gene” in the commands. Then a GFF containing both exons and genes in the regions of interest was created:
+```
+bedtools intersect -a genesOnly.gff -b genesOnlyCorrectedNoDup.bed -wa > finalChilense.gff
+```
+```
+bedtools intersect -a exonsOnly.gff -b exonsOnlyCorrectedNoDup.bed -wa >> finalChilense.gff
+```
+
+|   The available annotation only has exon features, so a `conda` environment was created for the `AGAT` toolkit (2021), which contains a perl script to calculate intron locations given gene and exon positions. The following command was run in the `conda` environment to create a GFF containing exon, intron, and gene locations:
+
+```
+agat_sp_add_introns.pl --gff finalChilense.gff --out finalChilenseWithIntrons.gff
+```
+
+|   Using the GFF, the data can be split into individual chromosomes and the chromosomes can be split into GFF features of exons and introns. The R script used to generate the data is available at [this Github repository.](https://github.com/milesandersonmn/SolanumChilensePopGenomeR/blob/main/SummaryStatisticsFinal.R) A summary of the R script is that the VCF and GFF data are split into scaffolds and an object of class `genome` is created with the scaffolded VCF and GFF. Populations are designated as vectors: 7 populations with 5 individuals per population. However, the population variables are a vector of 10 values, because the 5 individuals are split into 2 to account for diploidy. The `genome` object is split per chromosome by exon and intron GFF features. `PopGenome` requires more than 1 feature per object to initialize calculation of statistics via a `Gene.matrix`. Therefore, chromosomes with only 1 feature had a false feature of 1 base pair created in the GFF, which was deleted from the downstream data frames generated. Neutrality statistics, diversity statistics, and FST statistics were calculated. From these statistics Tajima’s D, nucleotide diversity ($\pi$), and FST for a population versus all individuals was stored in data frames with the corresponding chromosome and genomic positions. The data was then converted to `Tidyverse` (Wickham et al., 2019) compatible format to be visualized using `ggplot2`. 
+
+
+## Results
+
+### Short read alignment: 
+
+|	The bowtie2 and bbmap alignments differed substantially in several categories. The bbmap mapped read percentage averaged 97.16%, which was similar to the 97.96% average for the bowtie2 alignments. However, the bowtie2 alignment averaged 20.17% clipped reads compared to 0.1% clipped reads in the bbmap alignment. The mean coverage for bbmap was higher at 25.90 compared to 20.60. Mapping quality was for bbmap was also higher with a mean of 27.44 compared to the bowtie2 mapping quality mean of 17.12.
+	 
+### Variant discovery and evaluation:
+
+	
+|	The investigation of variants through population nucleotide diversity ($\pi$), Tajima’s D, and FST did conform for the most part to the known demographic history of *Solanum chilense*. Here we can see the population means and standard deviations for exon Tajima's D, nucleotide diversity, and FST:
+
+```{r echo=FALSE, results='asis'}
+library(knitr)
+ExonMeanTajima <- TajimaExonMaster %>% drop_na() %>%
+  group_by(population) %>%
+  summarise("mean Tajima's D" = mean(tajimasD), "standard deviation" = sd(tajimasD))
+ExonMeanDiversity <- DiversityExonMaster %>% drop_na() %>%
+  group_by(population) %>%
+  summarise("mean nucleotide diversity" = mean(pi), "standard deviation" = sd(pi))
+ExonMeanFST <- FSTExonMaster %>% drop_na() %>%
+  group_by(population) %>%
+  summarise("mean FST" = mean(FST), "standard deviation" = sd(FST))
+kable(ExonMeanTajima)
+kable(ExonMeanDiversity)
+kable(ExonMeanFST)
+```
+As well as the same metrics for introns:
+
+```{r echo=FALSE, results='asis'}
+library(knitr)
+IntronMeanTajima <- TajimaIntronMaster %>% drop_na() %>%
+  group_by(population) %>%
+  summarise("mean Tajima's D" = mean(tajimasD), "standard deviation" = sd(tajimasD))
+IntronMeanDiversity <- DiversityIntronMaster %>% drop_na() %>%
+  group_by(population) %>%
+  summarise("mean nucleotide diversity" = mean(pi), "standard deviation" = sd(pi))
+IntronMeanFST <- FSTIntronMaster %>% drop_na() %>%
+  group_by(population) %>%
+  summarise("mean FST" = mean(FST), "standard deviation" = sd(FST))
+kable(IntronMeanTajima)
+kable(IntronMeanDiversity)
+kable(IntronMeanFST)
+```
+
+|  The central populations (1963, 2931, and 3111) showed the lowest average FST for introns and exons, which would coincide with less population structure and more gene flow in these populations relative to the more geographically isolated highland and coastal populations. Their average intron and exon nucleotide diversity was also higher and had a much larger standard deviation, which could also represent greater gene flow into the populations. The Tajima’s D in all 3 populations is slightly upward of a neutral expectation, which could indicate a population contraction or simply a result of stochasticity. However, given the values of the intron D’s across all 3 populations, it could be assumed that this measure reflects demographic processes as the intronic regions are less likely to be acted upon by purifying selection that can result in an excess of rare alleles. As only 20 genes  and their respective intron and exon regions were under investigation, caution must be applied when speculating on only moderately high results for Tajima’s D relative to neutral expectations. 
+|	Highland populations 4117A and 4330 also exhibited results that would conform to expectation given the demographic history of the species. The two populations showed slight increases in average exon FST and more pronounced average intron FST increases. This would follow logically from the assumption that these populations represent a colonization event into the Chilean highlands and a greater resulting population structure due to relative geographical isolation in comparison to the central populations. Exon FST would be expected to increase less than intron FST due to the potential pressures of purifying selection on exonic region mutations. Intronic regions, which can more freely mutate without this pressure, would assumedly have more alleles unique to the given population and therefore a greater divergence as represented by FST becoming higher. Nucleotide diversity in the two populations was also lower on average than the central populations and had a markedly lower standard deviation, especially in the exonic regions. Given the evidence for potential weak population structure existing, this result would conform to expectation that less gene flow is occurring into the highland populations resulting in lower relative nucleotide diversity when compared to the central populations. Tajima’s D was similar for both populations to the central populations: slightly above neutral expectation for both introns and exons. This could possibly represent a population contraction in the both population’s demographic history.
+|	Populations 2932 and 4107 are endemic to the Chilean coastal region. These populations show significant evidence for population structure according to the research of Radusky and Igíc. This is reflected in the results of this analysis as well. Average nucleotide diversity is much lower in these populations, suggesting less gene flow into these populations. This could be a result of their relative geographical isolation, as evidenced by the lower average in population 4107, which inhabits the southern most extremity of the coastal range. Population 2932 has lower average nucleotide diversity as well although not as extreme. The lack of nucleotide diversity present could also be a feature of the reproductive impediment of the coastal populations when outcrossing with the more differentiated populations, as also shown in the Radusky and Igíc research. Crosses between the coastal populations and the central or highland populations result in significantly fewer seeds per fruit. This post-mating reproductive barrier could further inhibit gene flow into the coastal populations beyond simple geographical isolation, and partially explain the observed lower nucleotide diversity. Average FST conformed with the expectation for these populations as well, showing elevated values above the highland populations and central populations. Intronic regions also showed higher FST than exonic regions probably due to the aforementioned lack of purifying selection. Population 4107 showed the highest average FST values of all populations observed, likely due to the geographic and reproductive isolation previously noted. The Tajima’s D for the populations exhibited unexpected results. Exonic regions in population 2932 displayed an average similar to the central and highland populations, while population 4107 had the lowest exonic Tajima's D. The intronic regions displayed similar patterns to exons for population 4107, with an average intronic Tajima’s D closer to neutral expectation. However, population 2932 had the highest average Tajima’s D of all observed populations. The reasons for this would need further investigation. However, it is possible some loci exhibit linkage of heterozygotes that would upwardly bias the observed diversity against expectation and therefore raise Tajima’s D. 
+|   Boxplots were generated across the 7 populations for all statistics with the population means represented by a red point:
+
+```{r, warning=FALSE, echo=FALSE}
+print(ExonTajimasDPlot + ggtitle("Exon Tajima's D"))
+```
+```{r, warning=FALSE, echo=FALSE}
+print(IntronTajimasDPlot + ggtitle("Intron Tajima's D"))
+```
+
+```{r echo=FALSE}
+print(ExonNucleotideDiversityPlot + ggtitle("Exon Nucleotide Diversity"))
+```
+```{r echo=FALSE}
+print(IntronNucleotideDiversityPlot + ggtitle("Intron Nucleotide Diversity"))
+```
+
+```{r echo=FALSE}
+print(ExonNucleotideFSTPlot + ggtitle("Exon Nucleotide FST"))
+```
+
+```{r echo=FALSE}
+print(IntronNucleotideFSTPlot + ggtitle("Intron Nucleotide FST"))
+```
+	
+|	The variant discovery pipeline failed to detect any readily apparent signals of positive selection in the 7 populations examined. The lowest Tajima’s D measured (negative Tajima’s D being a potential indicator of positive selection) was -1.845 in population 4330 (a highland population) for an exon of a putative ortholog for a gibberellin receptor, GID1b-1. Mutants for this protein have been shown to exhibit gibberellin insensitive dwarfism, however the biological reason for this gene’s Tajima’s D measurement cannot be readily assumed or inferred at this point. The generation of nucleotide diversity being a stochastic process, the assumption is this loci’s negative D measure represents a random chance divergence from the other exons, whose average Tajima’s D are simply signals of demographic history. This exon also was not flagged as an outlier as population 4330 had the second highest standard deviation for exonic Tajima's D. 
+|	One notable positive Tajima’s D value was found in population 4117A for an exon of a putative ortholog for ethylene receptor ETR2. With a Tajima’s D value of 2.794, there is an indication for potential balancing selection. 3 other exonic regions also showed Tajima’s D above 2, a rule of thumb arbitrary cutoff for potentially interesting loci. Population 4117A had a D of 2.166 for an exon in the putative ortholog of the DELLA protein GAI. Population 2932 had a D of 2.108 for an exon in the putative ortholog for MYC transcription factor 2, and a D of 2.101 for the putative ortholog of gibberellin 20-oxidase 4. This same gene in population 2932 had an intronic region with a D of 2.559 and in population 4117A had a D of 2.421. The ortholog of ETR2 also showed high Tajima’s D for an intronic region in population 2932. As of yet, a determination of the biological reason for these values has not been made. It is worth noting that none of The positive Tajima's D values were outliers in their populations, and as such it should be ostensibly questionable how likely they are to represent real signals of balancing selection.
+|   Here are two tables of exons and introns with potentially interesting Tajima's D values.
+Exons:
+```{r echo=FALSE, results='asis'}
+library(knitr)
+exondf <- read.table(file = "sigTajimaExonsWithFunction.txt", sep = "\t", header = TRUE)
+kable(exondf)
+```
+
+Introns:
+
+```{r echo=FALSE, results='asis'}
+library(knitr)
+introndf <- read.table(file = "sigTajimaIntronsWithFunction.txt", sep = "\t", header = TRUE)
+kable(introndf)
+```
+
+
+## Discussion
+
+### Short read alignment:
+
+|	The comparative analysis of bowtie2 and bbmap displayed the relative advantages for bbmap alignment in overall mapping quality. Mapping quality for bowtie2 is likely heavily influenced by the high prevalence of clipped reads that were used to create the alignment. With a clipped read percentage averaging 20.17%, the likelihood of a read being falsely aligned especially in repetitive repeat regions is simply higher, and is potentially a major contributing factor to the lower overall mapping quality of the bowtie2 alignments compared to the bbmap. While the mapping quality showed marked differences, it should be noted that mapping qualities between algorithms are not generally directly comparable (Olson et al., 2015.) However, the rate of clipped read alignment in bowtie2 mapping should be of concern as mapping quality and confidence will decrease with the alignment of shorter reads and alignment to multiple regions. Bbmap has an apparent advantage in this regard.
+|	Bbmap also had a higher mean coverage rate and lower average duplication rate, which will both affect the confidence of a variant calling protocol. Higher mean coverage is advantageous in raising the confidence of genotype and variant calling and is therefore a desirable characteristic for a short read alignment to have. The bowtie2 alignments had an average duplication rate of 16.38%, while the bbmap alignments averaged 14.76%. Given that deduplication of alignments is an important processing step in variant calling, bbmap would seemingly have an advantage in this metric as well, given that there is the potential for a difference of an estimated 1.62% of mapped reads to be incorrectly flagged as duplicates in the bowtie2 alignment. This could potentially downwardly bias discovery of variants in gene families or repeat regions. 
+|	While the benefits of bbmap as a global aligner seem clear cut in mapping quality and confidence compared to bowtie2 as a local aligner, it is worth mentioning the different pressure these softwares puts on computational resources. Bbmap had an advantage in storage usage for two major reasons: indexing and BAM conversion. Bbmap’s default indexing behavior is similar to bowtie2’s in that they both use an index written to disk. While a separate step is used for the bowtie2 indexing, bbmap has the advantage of creating the index “on the fly.” However, if storage constraints are an issue, disk usage for indexing in bbmap can be suppressed using the `nodisk` flag in the command and the index is instead allocated to memory. If samtools is installed alongside bbmap, the alignment command can output straight to BAM format as well, which also puts less constraints on storage usage. The bowtie2 alignment can similarly be piped into samtools without the need for a SAM file, however the default behavior in bbmap is useful nonetheless. The major disadvantage that was encountered in using bbmap was the pressure on processing resources. Using the same amount of threads for either aligner, bbmap took significantly longer to perform a complete mapping. Unfortunately output files from qsub were accidentally deleted which displayed the processing times for each command, however anecdotally the bbmap commands running on the same amount of thread took 2 to 3 times as long to execute. 
+
+### Variant discovery and evaluation:
+
+|	The variant analysis pipeline produced mostly results that were concordant with expectations given the demographic history of the species under analysis. While no loci displayed obvious signals of positive selection, there were potential signals of balancing selection found given some loci showed high Tajima’s D. However, this is a hypothesis that has many difficulties in confirming or refuting. It is a noted issue within the field of population genetics that statistical testing for balancing selection is plagued by low power and a high rate of false positive detection (Fijarczyk and Babik, 2015.) Incorporation of a demographic model to generate an allele frequency spectra that accounts for population structure and historical demography would be necessary to see which alleles give statistical results outside of an expected range. As was seen in the population 4117A where the gene with the highest Tajima’s D was found in, the average Tajima’s D had a value above neutral expectations, with an average exon D of 0.724 as well as the highest standard deviation. With an adjusted allele frequency spectrum estimate for these baseline demographic influences, a Tajima’s D value of 2.794 could potentially more readily be attributed to stochasticity. Ultimately a more sophisticated statistical approach would be needed for detection of positive or balancing selection than was within the scope of this particular report. This could include demographic modeling as a well as a combination of several different statistical tests instead of relying purely on Tajima’s D. 
+|	Nucleotide diversity as measured by pi also conformed to expectation based upon demographic history. However, while general trends and averages of the nucleotide diversity statistic were reasonable, `PopGenome` as an analysis tool for this statistic can have flawed results. The variant calling pipeline used generated a VCF in which loci were excluded that had a genotype call in less than 75% of individuals. `PopGenome` will calculate pi from data that includes missing genotype calls, so if loci with missing genotype calls did not fall below 75% of individuals, calculation of nucleotide diversity would be downwardly biased for these loci. This problem probably would not drastically skew results, but nevertheless is a concern to note when selecting `PopGenome` as a tool to conduct analysis for this particular statistic (Korunes and Samuk, 2020).
+|	Similarly, the calculated FST for this report was concordant with expectations for the species given the demographic history and likelihood of population structuring. The method used for this statistic compared the average nucleotide heterozygosity in a population against the average nucleotide heterozygosity of all individuals sampled. This was convenient in displaying the overview of population differentiation but would be biased by inclusion of less differentiated populations relative to the population of interest in the total pooled population. A more informative method would be to make pairwise comparisons between all populations. However, this particular method was not carried out due to time constraints.
+
+### Conclusion
+
+|	The result of this project was intriguing in some regards even though there was a failure to definitively and simply identify adaptive genes under selection. A basic framework was developed capable of analyzing variants on a gene by gene basis for the genomic data currently available at TUM for *Solanum chilense*. Further investigation into genes of interest for the species could potentially be undertaken in a similar fashion, while refinement of the parameters used in several steps of the workflow as well as expansion of the summary statistics calculated could yield more informative results. While the results did not show obvious signs of selection for the genes considered, the fact that the workflow produced results that mostly met expectations for the different populations studied was encouraging. The concordance of the test data with expectations given demographic history means the workflow at least displays the ability to somewhat accurately process NGS data. With further effort and inclusion of more tools, the basic framework exhibited in this report could result in better and more accurate evaluation of potentially important variants. 
+
+## References
+
+AGAT. Perl. 2019. Reprint, NBIS -- National Bioinformatics Infrastructure Sweden, 2021. https://github.com/NBISweden/AGAT.
+
+Altschul, S. F., W. Gish, W. Miller, E. W. Myers, and D. J. Lipman. “Basic Local Alignment Search Tool.” Journal of Molecular Biology 215, no. 3 (October 5, 1990): 403–10. https://doi.org/10.1016/S0022-2836(05)80360-2.
+
+“Babraham Bioinformatics - FastQC A Quality Control Tool for High Throughput Sequence Data.” Accessed August 25, 2021.
+https://www.bioinformatics.babraham.ac.uk/projects/fastqc/.
+
+DOE Joint Genome Institute. “BBDuk Guide.” Accessed August 25, 2021. https://jgi.doe.gov/data-and-tools/bbtools/bb-tools-user-guide/bbduk-guide/.
+
+Research Computing. “BCFtools,” March 19, 2017. https://researchcomputing.syr.edu/bcftools/.
+
+Bushnell, Brian. “BBMap: A Fast, Accurate, Splice-Aware Aligner.” Lawrence Berkeley National Lab. (LBNL), Berkeley, CA (United States), March 17, 2014. https://www.osti.gov/biblio/1241166-bbmap-fast-accurate-splice-aware-aligner.
+
+Cadzow, Murray, James Boocock, Hoang T. Nguyen, Phillip Wilcox, Tony R. Merriman, and Michael A. Black. “A Bioinformatics Workflow for Detecting Signatures of Selection in Genomic Data.” Frontiers in Genetics 5 (2014): 293. https://doi.org/10.3389/fgene.2014.00293.
+
+Chinnusamy, Viswanathan, Masaru Ohta, Siddhartha Kanrar, Byeong-Ha Lee, Xuhui Hong, Manu Agarwal, and Jian-Kang Zhu. “ICE1: A Regulator of Cold-Induced Transcriptome and Freezing Tolerance in Arabidopsis.” Genes & Development 17, no. 8 (April 15, 2003): 1043–54. https://doi.org/10.1101/gad.1077503.
+
+Fijarczyk, Anna, and Wiesław Babik. “Detecting Balancing Selection in Genomes: Limits and Prospects.” Molecular Ecology 24, no. 14 (July 2015): 3529–45. https://doi.org/10.1111/mec.13226.
+
+García-Alcalde, Fernando, Konstantin Okonechnikov, José Carbonell, Luis M. Cruz, Stefan Götz, Sonia Tarazona, Joaquín Dopazo, Thomas F. Meyer, and Ana Conesa. “Qualimap: Evaluating next-Generation Sequencing Alignment Data.” Bioinformatics 28, no. 20 (October 15, 2012): 2678–79. https://doi.org/10.1093/bioinformatics/bts503.
+
+Garrison, Erik, Zev N. Kronenberg, Eric T. Dawson, Brent S. Pedersen, and Pjotr Prins. “Vcflib and Tools for Processing the VCF Variant Call Format,” May 23, 2021. https://doi.org/10.1101/2021.05.21.445151.
+
+Garrison, Erik, and Gabor Marth. “Haplotype-Based Variant Detection from Short-Read Sequencing.” ArXiv:1207.3907 [q-Bio], July 20, 2012. http://arxiv.org/abs/1207.3907.
+“Genome-Wide_Association-with-Cover-Page-v2.Pdf.” Accessed August 17, 2021. https://d1wqtxts1xzle7.cloudfront.net/37179957/Genome-Wide_Association-with-cover-page-v2.pdf?Expires=1629216016&Signature=PV7l5nrlJGeEbOfEE71PWC5QJjrWpE9nS1Mmb3MOS02qcsPRvCmxIKQ4RYCVPRMK4KjmuZuo2-bWvTxzn4dQAGkB8YwP-zmxuI0APMwczxPVuYlzpDAt6slyjfTA-4iBovNdRl7oiRCJMFT4yZKXKn8npagFF1u3i7dDcUpGoBtDRs2BQL0xmc0M5jO42Eu3kBncY-BgVkD0KW-tw~1cpAiqDzpmvbANTmJhuL4IuhwDHwl-OzVpC2rBwqlgKa2wqlDdwH9Idp9LvgqFpEQP9EaiT38DK5w~YkTbYU~eAEQxlnJ71GLDHSGhJQBxpotvnaRlUW0LvPH0FQ0sjcP9Hw__&Key-Pair-Id=APKAJLOHF5GGSLRBV4ZA#page=427.
+
+Guyot, Romain, Xudong Cheng, Yan Su, Zhukuan Cheng, Edith Schlagenhauf, Beat Keller, and Hong-Qing Ling. “Complex Organization and Evolution of the Tomato Pericentromeric Region at the FER Gene Locus.” Plant Physiology 138, no. 3 (July 2005): 1205–15. https://doi.org/10.1104/pp.104.058099.
+
+Huang, Yuan, Xi Wang, Song Ge, and Guang-Yuan Rao. “Divergence and Adaptive Evolution of the Gibberellin Oxidase Genes in Plants.” BMC Evolutionary Biology 15 (September 29, 2015): 207. https://doi.org/10.1186/s12862-015-0490-2.
+
+Jiang, Jingjing, Shenghui Ma, Nenghui Ye, Ming Jiang, Jiashu Cao, and Jianhua Zhang. “WRKY Transcription Factors in Plant Responses to Stresses.” Journal of Integrative Plant Biology 59, no. 2 (February 2017): 86–101. https://doi.org/10.1111/jipb.12513.
+
+Jun, Goo, Mary Kate Wing, Gonçalo R. Abecasis, and Hyun Min Kang. “An Efficient and Scalable Analysis Framework for Variant Extraction and Refinement from Population-Scale DNA Sequence Data.” Genome Research 25, no. 6 (June 2015): 918–25. https://doi.org/10.1101/gr.176552.114.
+
+Kato-Noguchi, Hisashi. “Low Temperature Acclimation Mediated by Ethanol Production Is Essential for Chilling Tolerance in Rice Roots.” Plant Signaling & Behavior 3, no. 3 (March 2008): 202–3.
+
+Khan, Nafees A., M. I. R. Khan, Antonio Ferrante, and Peter Poor. “Editorial: Ethylene: A Key Regulatory Molecule in Plants.” Frontiers in Plant Science 8 (2017): 1782. https://doi.org/10.3389/fpls.2017.01782.
+
+Korunes, Katharine L., and Kieran Samuk. “Pixy: Unbiased Estimation of Nucleotide Diversity and Divergence in the Presence of Missing Data,” June 28, 2020. https://doi.org/10.1101/2020.06.27.175091.
+
+Kwon, Sunyoung, Seunghyun Park, Byunghan Lee, and Sungroh Yoon. “In-Depth Analysis of Interrelation between Quality Scores and Real Errors in Illumina Reads.” Annual International Conference of the IEEE Engineering in Medicine and Biology Society. IEEE Engineering in Medicine and Biology Society. Annual International Conference 2013 (2013): 635–38. https://doi.org/10.1109/EMBC.2013.6609580.
+
+Langmead, Ben, and Steven L. Salzberg. “Fast Gapped-Read Alignment with Bowtie 2.” Nature Methods 9, no. 4 (April 2012): 357–59. https://doi.org/10.1038/nmeth.1923.
+
+Li, Heng. “A Statistical Framework for SNP Calling, Mutation Discovery, Association Mapping and Population Genetical Parameter Estimation from Sequencing Data.” Bioinformatics 27, no. 21 (November 1, 2011): 2987–93. https://doi.org/10.1093/bioinformatics/btr509.
+
+Li, Heng, Bob Handsaker, Alec Wysoker, Tim Fennell, Jue Ruan, Nils Homer, Gabor Marth, Goncalo Abecasis, Richard Durbin, and 1000 Genome Project Data Processing Subgroup. “The Sequence Alignment/Map Format and SAMtools.” Bioinformatics 25, no. 16 (August 15, 2009): 2078–79. https://doi.org/10.1093/bioinformatics/btp352.
+
+Lowry, David B., Damian Popovic, Darlene J. Brennan, and Liza M. Holeski. “Mechanisms of a Locally Adaptive Shift in Allocation among Growth, Reproduction, and Herbivore Resistance in Mimulus Guttatus*.” Evolution 73, no. 6 (2019): 1168–81. https://doi.org/10.1111/evo.13699.
+
+Olson, Nathan D., Steven P. Lund, Rebecca E. Colman, Jeffrey T. Foster, Jason W. Sahl, James M. Schupp, Paul Keim, Jayne B. Morrow, Marc L. Salit, and Justin M. Zook. “Best Practices for Evaluating Single Nucleotide Variant Calling Methods for Microbial Genomics.” Frontiers in Genetics 6 (2015): 235. https://doi.org/10.3389/fgene.2015.00235.
+
+Pandey, Sonali, and Dipjyoti Chakraborty. “Salicylic Acid and Drought Stress Response: Biochemical to Molecular Crosstalk.” In Stress Responses in Plants: Mechanisms of Toxicity and Tolerance, edited by Bhumi Nath Tripathi and Maria Müller, 247–65. Cham: Springer International Publishing, 2015. https://doi.org/10.1007/978-3-319-13368-3_10.
+
+Pfeifer, Bastian, Ulrich Wittelsbürger, Sebastian E. Ramos-Onsins, and Martin J. Lercher. “PopGenome: An Efficient Swiss Army Knife for Population Genomic Analyses in R.” Molecular Biology and Evolution 31, no. 7 (July 2014): 1929–36. https://doi.org/10.1093/molbev/msu136.
+
+Porto-Neto, Laercio R., Seung Hwan Lee, Hak Kyo Lee, and Cedric Gondro. “Detection of Signatures of Selection Using Fst.” Methods in Molecular Biology (Clifton, N.J.) 1019 (2013): 423–36. https://doi.org/10.1007/978-1-62703-447-0_19.
+
+“QC Fail Sequencing » Soft-Clipping of Reads May Add Potentially Unwanted Alignments to Repetitive Regions.” Accessed September 6, 2021. https://sequencing.qcfail.com/articles/soft-clipping-of-reads-may-add-potentially-unwanted-alignments-to-repetitive-regions/.
+
+Quinlan, Aaron R., and Ira M. Hall. “BEDTools: A Flexible Suite of Utilities for Comparing Genomic Features.” Bioinformatics 26, no. 6 (March 15, 2010): 841–42. https://doi.org/10.1093/bioinformatics/btq033.
+
+Raduski, Andrew R., and Boris Igić. “Biosystematic Studies on the Status of Solanum Chilense.” American Journal of Botany 108, no. 3 (March 2021): 520–37. https://doi.org/10.1002/ajb2.1621.
+
+Rodrigues, Maria A., Ricardo E. Bianchetti, and Luciano Freschi. “Shedding Light on Ethylene Metabolism in Higher Plants.” Frontiers in Plant Science 5 (December 1, 2014): 665. https://doi.org/10.3389/fpls.2014.00665.
+
+Sah, Saroj K., Kambham R. Reddy, and Jiaxu Li. “Abscisic Acid and Abiotic Stress Tolerance in Crop Plants.” Frontiers in Plant Science 7 (May 4, 2016): 571. https://doi.org/10.3389/fpls.2016.00571.
+
+Scranton, Melissa A., Ashley Yee, Sang-Youl Park, and Linda L. Walling. “Plant Leucine Aminopeptidases Moonlight as Molecular Chaperones to Alleviate Stress-Induced Damage.” The Journal of Biological Chemistry 287, no. 22 (May 25, 2012): 18408–17. https://doi.org/10.1074/jbc.M111.309500.
+
+Tajima, F. “Statistical Method for Testing the Neutral Mutation Hypothesis by DNA Polymorphism.” Genetics 123, no. 3 (November 1989): 585–95.
+
+Tanaka, Naoki, Makoto Matsuoka, Hidemi Kitano, Takayuki Asano, Hisatoshi Kaku, and Setsuko Komatsu. “Gid1, a Gibberellin-Insensitive Dwarf Mutant, Shows Altered Regulation of Probenazole-Inducible Protein (PBZ1) in Response to Cold Stress and Pathogen Attack.” Plant, Cell & Environment 29, no. 4 (April 2006): 619–31. https://doi.org/10.1111/j.1365-3040.2005.01441.x.
+
+VanWallendael, Acer, Ali Soltani, Nathan C. Emery, Murilo M. Peixoto, Jason Olsen, and David B. Lowry. “A Molecular View of Plant Local Adaptation: Incorporating Stress-Response Networks.” Annual Review of Plant Biology 70, no. 1 (2019): 559–83. https://doi.org/10.1146/annurev-arplant-050718-100114.
+
+Weir, B. S., and C. Clark Cockerham. “Estimating F-Statistics for the Analysis of Population Structure.” Evolution 38, no. 6 (1984): 1358–70. https://doi.org/10.1111/j.1558-5646.1984.tb05657.x.
+
+Wickham, Hadley, Mara Averick, Jennifer Bryan, Winston Chang, Lucy McGowan, Romain François, Garrett Grolemund, et al. “Welcome to the Tidyverse.” Journal of Open Source Software 4, no. 43 (November 21, 2019): 1686. https://doi.org/10.21105/joss.01686.
+
+Zhang, Hengyou, Neha Mittal, Larry J. Leamy, Oz Barazani, and Bao‐Hua Song. “Back into the Wild—Apply Untapped Genetic Diversity of Wild Relatives for Crop Improvement.” Evolutionary Applications 10, no. 1 (December 10, 2016): 5–24. https://doi.org/10.1111/eva.12434.
+
+## Appendix
+
+Table summary for exon statistics:
+
+```{r echo=FALSE, results='asis'}
+library(knitr)
+kable(AllExonStats)
+```
+
+Table summary for intron statistics:
+
+```{r echo=FALSE, results='asis'}
+library(knitr)
+kable(AllIntronStats)
+```
